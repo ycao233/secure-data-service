@@ -37,6 +37,8 @@ import com.google.common.collect.Table;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
+import org.slc.sli.api.config.BasicDefinitionStore;
+import org.slc.sli.api.constants.ResourceNames;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.elasticsearch.client.Client;
@@ -136,22 +138,29 @@ public class SearchResourceService {
      * Main entry point for retrieving search results
      *
      * @param resource
-     * @param resourcesToSearch
+     * @param entity The entity to search on.
      * @param queryUri
      * @param routeToDefaultApp
      *            - get ids via search app and route the request to the default
      *            app, attaching the ids
      * @return
      */
-    public ServiceResponse list(Resource resource, String resourcesToSearch, URI queryUri, boolean routeToDefaultApp) {
+    public ServiceResponse list(Resource resource, final String entity, URI queryUri, boolean routeToDefaultApp) {
+        LOG.debug(">>>SearchResourceService.list()");
+        LOG.debug("   resource; namespace: {}, resourceType: {}", resource.getNamespace(), resource.getResourceType());
+        LOG.debug("   entity: {}", entity);
+        LOG.debug("   queryUri: {}", queryUri.getPath());
+        LOG.debug("   routeToDefaultApp: {}", entity);
         List<EntityBody> finalEntities = null;
         Boolean moreEntities;
+
         // set up query criteria, make query
         try {
-            Pair<? extends List<EntityBody>, Boolean> resultPair = retrieveResults(prepareQuery(resource,
-                    resourcesToSearch, queryUri));
+            ApiQuery apiQuery = prepareQuery(resource, entity, queryUri);
+            Pair<? extends List<EntityBody>, Boolean> resultPair = retrieveResults(entity, apiQuery);
             finalEntities = resultPair.getLeft();
             moreEntities = resultPair.getRight();
+
             if (routeToDefaultApp) {
                 finalEntities = routeToDefaultApp(finalEntities, new ApiQuery(queryUri));
             } else {
@@ -167,6 +176,8 @@ public class SearchResourceService {
             }
             throw hsce;
         }
+
+        LOG.debug("<<<SearchResourceService.list()");
 
         if (moreEntities) {
             ApiQuery query = new ApiQuery(queryUri);
@@ -220,20 +231,47 @@ public class SearchResourceService {
     }
 
     /**
+     * Allow use of the hard entity count limit for certain entities (DE2300 - do not limit to 250 entries).
+     *
+     * @param entity The name of the entity.
+     * @return boolean true if the hard entity county limit value should be utilized based on entity name.
+     */
+    public boolean disallowHardEntityCountLimit(final String entity) {
+       //TODO TAF 11-14-2013 change this impl to use a switch with JDK7
+       //TODO TAF 11-14-2013 ture, set max limit based on configuration retrieved from a datastore.
+        if (ResourceNames.ASSESSMENTS.toLowerCase().equalsIgnoreCase(entity)) {
+            return Boolean.FALSE;
+        } else if (ResourceNames.COMPETENCY_LEVEL_DESCRIPTORS.equalsIgnoreCase(entity)) {
+            return Boolean.FALSE;
+        } else if (ResourceNames.LEARNINGOBJECTIVES.equalsIgnoreCase(entity)) {
+            return Boolean.FALSE;
+        } else if (ResourceNames.LEARNINGSTANDARDS.equalsIgnoreCase(entity)) {
+            return Boolean.FALSE;
+        } else if (ResourceNames.STUDENT_COMPETENCY_OBJECTIVES.equalsIgnoreCase(entity)) {
+            return Boolean.FALSE;
+        } else {
+            return Boolean.TRUE;
+        }
+    }
+
+    /**
      * Takes an ApiQuery and retrieve results. Includes logic for pagination and
      * calls methods to filter by security context.
      *
      * @param apiQuery
      * @return
      */
-    public Pair<? extends List<EntityBody>, Boolean> retrieveResults(ApiQuery apiQuery) {
-
-        // get the offset and limit requested
+    public Pair<? extends List<EntityBody>, Boolean> retrieveResults(final String entity, ApiQuery apiQuery) {
+        LOG.debug(">>>SearchResourceService.retrieveResults()");
+        /* Get limit from the query. */
         int limit = apiQuery.getLimit();
-        // Use local max value if the more obvious HARD_ENTITY_COUNT_LIMIT or 0 was specified.
-        if (limit == 0 || limit == Constraints.HARD_ENTITY_COUNT_LIMIT) {
+        LOG.debug("   limit: {}", limit);
+
+        /* Use local max value if the more obvious HARD_ENTITY_COUNT_LIMIT or 0 was specified. */
+        if (disallowHardEntityCountLimit(entity) || (limit == 0 || (limit == Constraints.HARD_ENTITY_COUNT_LIMIT)) ) {
             limit = maxFilteredSearchResultCount;
         }
+
         if (limit > maxFilteredSearchResultCount) {
             String errorMessage = "Invalid condition, limit [" + limit
                     + "] cannot be greater than maxFilteredResults [" + maxFilteredSearchResultCount + "] on search";
@@ -241,14 +279,17 @@ public class SearchResourceService {
             throw new PreConditionFailedException(errorMessage);
         }
 
-        int offset = apiQuery.getOffset();
-        int totalLimit = limit + offset + 1;
+        LOG.debug("   limit: {}", limit);
 
-        // now, based on the requested offset and limit, calculate
-        // new offset and limit for retrieving data in batches from
-        // Elasticsearch.
-        // this is necessary because some Elasticsearch results will be
-        // filtered out based on security context.
+        int offset = apiQuery.getOffset();
+        LOG.debug("   offset: {}", offset);
+
+        int totalLimit = limit + offset + 1;
+        LOG.debug("   totalLimit: {}", totalLimit);
+
+        /* Based on the offset and limit, calculate nthe actual ew offset and limit for retrieving data in
+         * batches from Elasticsearch.  This is necessary because some Elasticsearch results will be
+         * filtered out based on security context.  */
         int limitPerQuery = totalLimit * 2;
         if (limitPerQuery < MINIMUM_ES_LIMIT_PER_QUERY) {
             limitPerQuery = MINIMUM_ES_LIMIT_PER_QUERY;
@@ -258,6 +299,8 @@ public class SearchResourceService {
 
         List<EntityBody> entityBodies = null;
         List<EntityBody> finalEntities = new ArrayList<EntityBody>();
+
+        LOG.debug("   maxUnfilteredSearchResultCount: {}", this.maxUnfilteredSearchResultCount);
 
         while (finalEntities.size() <= totalLimit
                 && apiQuery.getOffset() + limitPerQuery < this.maxUnfilteredSearchResultCount) {
@@ -294,7 +337,7 @@ public class SearchResourceService {
     /**
      * Replace entity type 'search' with the real entity types
      *
-     * @param entities
+     * @param entities A List of EntityBody objects.
      */
     private void setRealEntityTypes(List<EntityBody> entities) {
         for (EntityBody entity : entities) {
@@ -308,18 +351,27 @@ public class SearchResourceService {
      * ApiQuery from the query URI, sets query criteria and security context
      * criteria.
      *
+     * @param resource
+     * @param entity
      * @param queryUri
-     * @return
+     * @return ApiQuery
      */
-    public ApiQuery prepareQuery(Resource resource, String entities, URI queryUri) {
+    public ApiQuery prepareQuery(Resource resource, String entity, URI queryUri) {
+        LOG.debug(">>>SearchResourceService.prepareQuery()");
+        LOG.debug("   resource; namespace: {}, resourceType: {}", resource.getNamespace(), resource.getResourceType());
+        LOG.debug("   entity: {}", entity);
+        LOG.debug("   queryUri: {}", queryUri.getPath());
+
         ApiQuery apiQuery = new ApiQuery(queryUri);
-        addGranularAccessCriteria(entities,apiQuery);
+        addGranularAccessCriteria(entity, apiQuery);
         filterCriteria(apiQuery);
         addSecurityContext(apiQuery);
-        if (entities != null) {
-            apiQuery.addCriteria(new NeutralCriteria("_type", NeutralCriteria.CRITERIA_IN, getEntityTypes(resource,
-                    entities)));
+
+        if (entity != null) {
+            apiQuery.addCriteria(new NeutralCriteria("_type", NeutralCriteria.CRITERIA_IN, getEntityTypes(resource, entity)));
         }
+
+        LOG.debug("<<<SearchResourceService.prepareQuery()");
         return apiQuery;
     }
 
@@ -347,11 +399,10 @@ public class SearchResourceService {
      * context. Original list may by cross-collection. Retains the original
      * order of entities.
      *
+     * @paran entityBodies
      * @param offset
-     *            -
      * @param limit
-     *            - total requested
-     * @return
+     * @return Collection<EntityBody>
      */
     public Collection<EntityBody> filterResultsBySecurity(List<EntityBody> entityBodies, int offset, int limit) {
         if (entityBodies == null || entityBodies.isEmpty()) {
@@ -360,21 +411,19 @@ public class SearchResourceService {
 
         int total = offset + limit + 1;
         List<EntityBody> sublist;
-        // this collection will be filtered out based on security context but
-        // the original order will be preserved
+
+        /* Filter the collection based on security context.  Preserve original order will be preserved. */
         List<EntityBody> finalEntities = new ArrayList<EntityBody>(entityBodies);
         final HashBasedTable<String, String, EntityBody> filterMap = HashBasedTable.create();
         Table<String, String, EntityBody> entitiesByType = HashBasedTable.create();
-        // filter results through security context
-        // security checks are expensive, so do min checks necessary at a time
+
+        /* Filter results by security context security; checks are expensive, so do min necessary at a time. */
         while (!entityBodies.isEmpty() && filterMap.size() < total) {
             sublist = new ArrayList<EntityBody>(entityBodies.subList(0, Math.min(entityBodies.size(), limit)));
             entitiesByType = getEntityTable(sublist);
 
             for (String type : entitiesByType.rowKeySet()) {
-                /*
-                 * Skip validation for global entities.
-                 */
+                /* Skip validation for global entities. */
                 if (contextValidator.isGlobalEntity(type)) {
                     LOG.debug("search: skipping validation --> global entity: {}", type);
                     Map<String, EntityBody> row = entitiesByType.row(type);
@@ -399,7 +448,7 @@ public class SearchResourceService {
             entitiesByType.clear();
         }
 
-        // use filter map to return final entity list
+        /* Use filter map to return final entity list. */
         return Lists.newArrayList(Iterables.filter(finalEntities, new Predicate<EntityBody>() {
             @Override
             public boolean apply(EntityBody input) {
@@ -458,7 +507,6 @@ public class SearchResourceService {
             for (NeutralCriteria criteria : criterias) {
                 if (!WHITE_LIST_PARAMETERS.contains(criteria.getKey())) {
                     removalList.add(criteria);
-
                 } else if ("q".equals(criteria.getKey())) {
                     doFilter = true;
                     applyDefaultPattern(criteria);

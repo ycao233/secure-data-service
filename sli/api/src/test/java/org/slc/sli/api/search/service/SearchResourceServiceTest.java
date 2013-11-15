@@ -46,6 +46,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+import org.slc.sli.api.constants.ResourceNames;
 import org.slc.sli.api.service.EntityService;
 import org.slc.sli.common.constants.ParameterConstants;
 import org.slc.sli.domain.MongoEntity;
@@ -262,7 +263,7 @@ public class SearchResourceServiceTest {
         setupAuth(EntityNames.STAFF);
         URI queryUri = new URI("http://local.slidev.org:8080/api/rest/v1/search?q=David%20Wu&offset=0&limit=300");
         ApiQuery apiQuery = new ApiQuery(queryUri);
-        resourceService.retrieveResults(apiQuery);
+        resourceService.retrieveResults(EntityNames.STAFF.toLowerCase(), apiQuery);
     }
 
     private static void setupAuth(String type) {
@@ -414,7 +415,7 @@ public class SearchResourceServiceTest {
             }
         });
         ApiQuery apiQuery = rs.prepareQuery(new Resource("v1", "student"), null, queryUri);
-        Pair<? extends List<EntityBody>, Boolean> resultPair = rs.retrieveResults(apiQuery);
+        Pair<? extends List<EntityBody>, Boolean> resultPair = rs.retrieveResults("student", apiQuery);
         List<EntityBody> results = resultPair.getLeft();
         Boolean hasMore = resultPair.getRight();
         Assert.assertEquals(numResults, results.size());
@@ -423,5 +424,57 @@ public class SearchResourceServiceTest {
 
     private List<EntityBody> getResults(List<EntityBody> list, int num) {
         return new ArrayList<EntityBody>(list.subList(0, Math.min(num, list.size())));
+    }
+
+    /**
+     * Unit test for method added to resolve DE2300.
+     */
+    @Test
+    public void testDisallowHardEntityCountLimitDE2300() {
+        Boolean result = null;
+        String entityName = "";
+
+        //test assessments
+        entityName = ResourceNames.ASSESSMENTS.toUpperCase();
+        result = this.resourceService.disallowHardEntityCountLimit(entityName);
+        Assert.assertEquals(result, Boolean.FALSE);
+
+        //test competency level descriptions
+        entityName = ResourceNames.COMPETENCY_LEVEL_DESCRIPTORS.toUpperCase();
+        result = this.resourceService.disallowHardEntityCountLimit(entityName);
+        Assert.assertEquals(result, Boolean.FALSE);
+
+        //test learning objectives
+        entityName = ResourceNames.LEARNINGOBJECTIVES.toUpperCase();
+        result = this.resourceService.disallowHardEntityCountLimit(entityName);
+        Assert.assertEquals(result, Boolean.FALSE);
+
+        //test learning standards
+        entityName = ResourceNames.LEARNINGSTANDARDS.toUpperCase();
+        result = this.resourceService.disallowHardEntityCountLimit(entityName);
+        Assert.assertEquals(result, Boolean.FALSE);
+
+        //test student competency objectives
+        entityName = ResourceNames.STUDENT_COMPETENCY_OBJECTIVES.toUpperCase();
+        result = this.resourceService.disallowHardEntityCountLimit(entityName);
+        Assert.assertEquals(result, Boolean.FALSE);
+
+        //test null entity
+        entityName = null;
+        result = this.resourceService.disallowHardEntityCountLimit(entityName);
+        Assert.assertEquals(result, Boolean.TRUE);
+
+        //test empty entity
+        entityName = "";
+        result = this.resourceService.disallowHardEntityCountLimit(entityName);
+        Assert.assertEquals(result, Boolean.TRUE);
+
+        //test a few other entities that should not disallow use of the hard limit.
+        entityName = ResourceNames.STUDENTS.toUpperCase();
+        result = this.resourceService.disallowHardEntityCountLimit(entityName);
+        Assert.assertEquals(result, Boolean.TRUE);
+        entityName = ResourceNames.COURSES.toUpperCase();
+        result = this.resourceService.disallowHardEntityCountLimit(entityName);
+        Assert.assertEquals(result, Boolean.TRUE);
     }
 }
