@@ -107,6 +107,9 @@ public class SearchResourceService {
          * @return true if the extended search value should be used.
          */
         public static boolean find(final String resourceName) {
+            if (StringUtils.isEmpty(resourceName)) {
+                return false;
+            }
             return ExtendedSearchEntities.EXTENDED_LIMIT_ENTITIES.contains(resourceName.toLowerCase());
         }
     }
