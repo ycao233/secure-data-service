@@ -88,22 +88,17 @@ public class SearchResourceService {
     /**
      * Static class that defines the list of entities that should use the extended search limit.
      * The business said to increase the value from 250 (DE2300).
-     * TODO Refactor, per class level note.
+     * TODO Refactor (refer to class level note).
      */
     protected static class ExtendedSearchEntities {
-        private static final Set extendedSearchEntities = new HashSet<String>();
-
-        /**
-         * The limit to use for entities that require a larger
-         */
-        public static final int MAX_SEARCH_RESULTS = 5000;
+        private static final Set EXTENDED_LIMIT_ENTITIES = new HashSet<String>();
 
         static {
-            extendedSearchEntities.add(ResourceNames.ASSESSMENTS.toLowerCase());
-            extendedSearchEntities.add(ResourceNames.COMPETENCY_LEVEL_DESCRIPTORS.toLowerCase());
-            extendedSearchEntities.add(ResourceNames.LEARNINGOBJECTIVES.toLowerCase());
-            extendedSearchEntities.add(ResourceNames.LEARNINGSTANDARDS.toLowerCase());
-            extendedSearchEntities.add(ResourceNames.STUDENT_COMPETENCY_OBJECTIVES.toLowerCase());
+            EXTENDED_LIMIT_ENTITIES.add(ResourceNames.ASSESSMENTS.toLowerCase());
+            EXTENDED_LIMIT_ENTITIES.add(ResourceNames.COMPETENCY_LEVEL_DESCRIPTORS.toLowerCase());
+            EXTENDED_LIMIT_ENTITIES.add(ResourceNames.LEARNINGOBJECTIVES.toLowerCase());
+            EXTENDED_LIMIT_ENTITIES.add(ResourceNames.LEARNINGSTANDARDS.toLowerCase());
+            EXTENDED_LIMIT_ENTITIES.add(ResourceNames.STUDENT_COMPETENCY_OBJECTIVES.toLowerCase());
         }
 
         /**
@@ -112,7 +107,7 @@ public class SearchResourceService {
          * @return true if the extended search value should be used.
          */
         public static boolean find(final String resourceName) {
-            return ExtendedSearchEntities.extendedSearchEntities.contains(resourceName.toLowerCase());
+            return ExtendedSearchEntities.EXTENDED_LIMIT_ENTITIES.contains(resourceName.toLowerCase());
         }
     }
 
@@ -133,6 +128,12 @@ public class SearchResourceService {
 
     @Value("${sli.search.maxFilteredResults:250}")
     private int maxFilteredSearchResultCount;
+
+    /**
+     * This maxvalue overrides the maxFilteredSearchResult count value for certain entities.
+     */
+    @Value("${sli.search.maxUnfilteredResults:5000}")
+    private int maxUnfilteredSearchResultOverrideCount;
 
     @Autowired
     private ContextValidator contextValidator;
@@ -171,11 +172,7 @@ public class SearchResourceService {
      * @return
      */
     public ServiceResponse list(Resource resource, final String entity, URI queryUri, boolean routeToDefaultApp) {
-        LOG.debug(">>>SearchResourceService.list()");
-        LOG.debug("   resource; namespace: {}, resourceType: {}", resource.getNamespace(), resource.getResourceType());
         LOG.debug("   entity: {}", entity);
-        LOG.debug("   queryUri: {}", queryUri.getPath());
-        LOG.debug("   routeToDefaultApp: {}", entity);
         List<EntityBody> finalEntities = null;
         Boolean moreEntities;
 
@@ -201,8 +198,6 @@ public class SearchResourceService {
             }
             throw hsce;
         }
-
-        LOG.debug("<<<SearchResourceService.list()");
 
         if (moreEntities) {
             ApiQuery query = new ApiQuery(queryUri);
@@ -265,29 +260,29 @@ public class SearchResourceService {
     public Pair<? extends List<EntityBody>, Boolean> retrieveResults(final String entity, ApiQuery apiQuery) {
         LOG.debug(">>>SearchResourceService.retrieveResults()");
 
-        /* Get limit from the query. */
-        int queryLimit = apiQuery.getLimit();
-        LOG.debug("   apiQuert.limit: {}", queryLimit);
+        int maxSearchResultCount =  this.maxFilteredSearchResultCount;
 
-        /* Use local max value if the more obvious HARD_ENTITY_COUNT_LIMIT or 0 was specified. */
+        /* DE2300 - Use local max value if the more obvious HARD_ENTITY_COUNT_LIMIT or 0 was specified. */
         if(SearchResourceService.ExtendedSearchEntities.find(entity)) {
-            //DE2300 allow larger max for certain entities.
-            queryLimit = ExtendedSearchEntities.MAX_SEARCH_RESULTS;
-        } else if (queryLimit == 0 || queryLimit == Constraints.HARD_ENTITY_COUNT_LIMIT)  {
-            queryLimit = this.maxFilteredSearchResultCount;
+            maxSearchResultCount = this.maxUnfilteredSearchResultOverrideCount;
+        }
 
-            if (queryLimit > this.maxUnfilteredSearchResultCount) {
-                String errorMessage = "Invalid condition, limit [" + queryLimit
-                        + "] cannot be greater than maxFilteredResults [" + this.maxUnfilteredSearchResultCount + "] on search";
-                LOG.error(errorMessage);
-                throw new PreConditionFailedException(errorMessage);
-            }
+        // get the offset and limit requested
+        int limit = apiQuery.getLimit();
+        // Use local max value if the more obvious HARD_ENTITY_COUNT_LIMIT or 0 was specified.
+        if (limit == 0 || limit == Constraints.HARD_ENTITY_COUNT_LIMIT) {
+            limit = maxSearchResultCount;
+        }
+        if (limit > maxSearchResultCount) {
+            String errorMessage = "Invalid condition, limit [" + limit
+                    + "] cannot be greater than maxFilteredResults [" + maxSearchResultCount + "] on search";
+            LOG.error(errorMessage);
+            throw new PreConditionFailedException(errorMessage);
         }
 
         int offset = apiQuery.getOffset();
-        LOG.debug("   apiQuery.offset: {}", offset);
+        int totalLimit = limit + offset + 1;
 
-        int totalLimit = queryLimit + offset + 1;
         LOG.debug("   totalLimit: {}", totalLimit);
 
         /* Based on the offset and limit, calculate nthe actual ew offset and limit for retrieving data in
@@ -304,9 +299,6 @@ public class SearchResourceService {
         List<EntityBody> entityBodies = null;
         List<EntityBody> finalEntities = new ArrayList<EntityBody>();
 
-        LOG.debug("   unfilteredSearchResultCount: {}", this.maxUnfilteredSearchResultCount);
-        LOG.debug("   filteredSearchResultCount: {}", this.maxFilteredSearchResultCount);
-
         while (finalEntities.size() <= totalLimit
                 && apiQuery.getOffset() + limitPerQuery < this.maxUnfilteredSearchResultCount) {
 
@@ -314,12 +306,13 @@ public class SearchResourceService {
             entityBodies = (List<EntityBody>) getService().listBasedOnContextualRoles(apiQuery);
             LOG.debug("Got {} entities back", entityBodies.size());
             int lastSize = entityBodies.size();
-            finalEntities.addAll(filterResultsBySecurity(entityBodies, offset, queryLimit));
+            finalEntities.addAll(filterResultsBySecurity(entityBodies, offset, limit));
 
             // if no more results to grab, then we're done
-            if (lastSize < limitPerQuery && lastSize < queryLimit) {
+            if (lastSize < limitPerQuery && lastSize < limit) {
                 break;
             }
+
             apiQuery.setOffset(apiQuery.getOffset() + apiQuery.getLimit());
         }
 
@@ -330,10 +323,10 @@ public class SearchResourceService {
         }
 
         finalEntities.subList(0, offset).clear();
-        if (finalEntities.size() <= queryLimit) {
+        if (finalEntities.size() <= limit) {
             return Pair.of(finalEntities, false);
         } else {
-            int upperBound = queryLimit > finalEntities.size() ? finalEntities.size() : queryLimit;
+            int upperBound = limit > finalEntities.size() ? finalEntities.size() : limit;
             return Pair.of(finalEntities.subList(0, upperBound), true);
         }
     }
@@ -681,4 +674,26 @@ public class SearchResourceService {
             }
         }
     }
+
+
+    public int getMaxUnfilteredSearchResultOverrideCount() {
+        return maxUnfilteredSearchResultOverrideCount;
+    }
+
+    public void setMaxUnfilteredSearchResultOverrideCount(int maxUnfilteredSearchResultOverrideCount) {
+        this.maxUnfilteredSearchResultOverrideCount = maxUnfilteredSearchResultOverrideCount;
+    }
+
+    public int getMaxUnfilteredSearchResultCount() {
+        return maxUnfilteredSearchResultCount;
+    }
+
+    public int getMaxFilteredSearchResultCount() {
+        return maxFilteredSearchResultCount;
+    }
+
+    public void setMaxFilteredSearchResultCount(int maxFilteredSearchResultCount) {
+        this.maxFilteredSearchResultCount = maxFilteredSearchResultCount;
+    }
+
 }
