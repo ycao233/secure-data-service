@@ -17,14 +17,7 @@ package org.slc.sli.api.search.service;
 
 import java.io.File;
 import java.net.URI;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
@@ -82,14 +75,46 @@ import org.slc.sli.domain.NeutralQuery;
  * Service class to handle all API search requests. Retrieves results using data
  * access classes. Queries and filters results based on the user's security
  * context (role, ed-org, school, section assocs, etc.)
+ *
  */
-
+// TODO 11-19-2013 TAF  Refactor and abstract all configuration.
 @Component
 public class SearchResourceService {
 
     private static final Logger LOG = LoggerFactory.getLogger(SearchResourceService.class);
 
     private static final String CONTEXT_SCHOOL_ID = "context.schoolId";
+
+    /**
+     * Static class that defines the list of entities that should use the extended search limit.
+     * The business said to increase the value from 250 (DE2300).
+     * TODO Refactor, per class level note.
+     */
+    protected static class ExtendedSearchEntities {
+        private static final Set extendedSearchEntities = new HashSet<String>();
+
+        /**
+         * The limit to use for entities that require a larger
+         */
+        public static final int MAX_SEARCH_RESULTS = 5000;
+
+        static {
+            extendedSearchEntities.add(ResourceNames.ASSESSMENTS.toLowerCase());
+            extendedSearchEntities.add(ResourceNames.COMPETENCY_LEVEL_DESCRIPTORS.toLowerCase());
+            extendedSearchEntities.add(ResourceNames.LEARNINGOBJECTIVES.toLowerCase());
+            extendedSearchEntities.add(ResourceNames.LEARNINGSTANDARDS.toLowerCase());
+            extendedSearchEntities.add(ResourceNames.STUDENT_COMPETENCY_OBJECTIVES.toLowerCase());
+        }
+
+        /**
+         * Returns true if ResourceName should use the extended search value
+         * @param resourceName
+         * @return true if the extended search value should be used.
+         */
+        public static boolean find(final String resourceName) {
+            return ExtendedSearchEntities.extendedSearchEntities.contains(resourceName.toLowerCase());
+        }
+    }
 
     // Minimum limit on results to retrieve from Elasticsearch each trip
     private static final int MINIMUM_ES_LIMIT_PER_QUERY = 10;
@@ -231,30 +256,6 @@ public class SearchResourceService {
     }
 
     /**
-     * Allow use of the hard entity count limit for certain entities (DE2300 - do not limit to 250 entries).
-     *
-     * @param entity The name of the entity.
-     * @return boolean true if the hard entity county limit value should be utilized based on entity name.
-     */
-    public boolean disallowHardEntityCountLimit(final String entity) {
-       //TODO TAF 11-14-2013 change this impl to use a switch with JDK7
-       //TODO TAF 11-14-2013 ture, set max limit based on configuration retrieved from a datastore.
-        if (ResourceNames.ASSESSMENTS.toLowerCase().equalsIgnoreCase(entity)) {
-            return Boolean.FALSE;
-        } else if (ResourceNames.COMPETENCY_LEVEL_DESCRIPTORS.equalsIgnoreCase(entity)) {
-            return Boolean.FALSE;
-        } else if (ResourceNames.LEARNINGOBJECTIVES.equalsIgnoreCase(entity)) {
-            return Boolean.FALSE;
-        } else if (ResourceNames.LEARNINGSTANDARDS.equalsIgnoreCase(entity)) {
-            return Boolean.FALSE;
-        } else if (ResourceNames.STUDENT_COMPETENCY_OBJECTIVES.equalsIgnoreCase(entity)) {
-            return Boolean.FALSE;
-        } else {
-            return Boolean.TRUE;
-        }
-    }
-
-    /**
      * Takes an ApiQuery and retrieve results. Includes logic for pagination and
      * calls methods to filter by security context.
      *
@@ -263,28 +264,30 @@ public class SearchResourceService {
      */
     public Pair<? extends List<EntityBody>, Boolean> retrieveResults(final String entity, ApiQuery apiQuery) {
         LOG.debug(">>>SearchResourceService.retrieveResults()");
+
         /* Get limit from the query. */
-        int limit = apiQuery.getLimit();
-        LOG.debug("   limit: {}", limit);
+        int queryLimit = apiQuery.getLimit();
+        LOG.debug("   apiQuert.limit: {}", queryLimit);
 
         /* Use local max value if the more obvious HARD_ENTITY_COUNT_LIMIT or 0 was specified. */
-        if (disallowHardEntityCountLimit(entity) || (limit == 0 || (limit == Constraints.HARD_ENTITY_COUNT_LIMIT)) ) {
-            limit = maxFilteredSearchResultCount;
-        }
+        if(SearchResourceService.ExtendedSearchEntities.find(entity)) {
+            //DE2300 allow larger max for certain entities.
+            queryLimit = ExtendedSearchEntities.MAX_SEARCH_RESULTS;
+        } else if (queryLimit == 0 || queryLimit == Constraints.HARD_ENTITY_COUNT_LIMIT)  {
+            queryLimit = this.maxFilteredSearchResultCount;
 
-        if (limit > maxFilteredSearchResultCount) {
-            String errorMessage = "Invalid condition, limit [" + limit
-                    + "] cannot be greater than maxFilteredResults [" + maxFilteredSearchResultCount + "] on search";
-            LOG.error(errorMessage);
-            throw new PreConditionFailedException(errorMessage);
+            if (queryLimit > this.maxUnfilteredSearchResultCount) {
+                String errorMessage = "Invalid condition, limit [" + queryLimit
+                        + "] cannot be greater than maxFilteredResults [" + this.maxUnfilteredSearchResultCount + "] on search";
+                LOG.error(errorMessage);
+                throw new PreConditionFailedException(errorMessage);
+            }
         }
-
-        LOG.debug("   limit: {}", limit);
 
         int offset = apiQuery.getOffset();
-        LOG.debug("   offset: {}", offset);
+        LOG.debug("   apiQuery.offset: {}", offset);
 
-        int totalLimit = limit + offset + 1;
+        int totalLimit = queryLimit + offset + 1;
         LOG.debug("   totalLimit: {}", totalLimit);
 
         /* Based on the offset and limit, calculate nthe actual ew offset and limit for retrieving data in
@@ -294,13 +297,15 @@ public class SearchResourceService {
         if (limitPerQuery < MINIMUM_ES_LIMIT_PER_QUERY) {
             limitPerQuery = MINIMUM_ES_LIMIT_PER_QUERY;
         }
+
         apiQuery.setLimit(limitPerQuery);
         apiQuery.setOffset(0);
 
         List<EntityBody> entityBodies = null;
         List<EntityBody> finalEntities = new ArrayList<EntityBody>();
 
-        LOG.debug("   maxUnfilteredSearchResultCount: {}", this.maxUnfilteredSearchResultCount);
+        LOG.debug("   unfilteredSearchResultCount: {}", this.maxUnfilteredSearchResultCount);
+        LOG.debug("   filteredSearchResultCount: {}", this.maxFilteredSearchResultCount);
 
         while (finalEntities.size() <= totalLimit
                 && apiQuery.getOffset() + limitPerQuery < this.maxUnfilteredSearchResultCount) {
@@ -309,13 +314,12 @@ public class SearchResourceService {
             entityBodies = (List<EntityBody>) getService().listBasedOnContextualRoles(apiQuery);
             LOG.debug("Got {} entities back", entityBodies.size());
             int lastSize = entityBodies.size();
-            finalEntities.addAll(filterResultsBySecurity(entityBodies, offset, limit));
+            finalEntities.addAll(filterResultsBySecurity(entityBodies, offset, queryLimit));
 
             // if no more results to grab, then we're done
-            if (lastSize < limitPerQuery && lastSize < limit) {
+            if (lastSize < limitPerQuery && lastSize < queryLimit) {
                 break;
             }
-
             apiQuery.setOffset(apiQuery.getOffset() + apiQuery.getLimit());
         }
 
@@ -326,10 +330,10 @@ public class SearchResourceService {
         }
 
         finalEntities.subList(0, offset).clear();
-        if (finalEntities.size() <= limit) {
+        if (finalEntities.size() <= queryLimit) {
             return Pair.of(finalEntities, false);
         } else {
-            int upperBound = limit > finalEntities.size() ? finalEntities.size() : limit;
+            int upperBound = queryLimit > finalEntities.size() ? finalEntities.size() : queryLimit;
             return Pair.of(finalEntities.subList(0, upperBound), true);
         }
     }

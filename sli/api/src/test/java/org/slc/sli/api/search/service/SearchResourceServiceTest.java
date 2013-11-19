@@ -436,45 +436,45 @@ public class SearchResourceServiceTest {
 
         //test assessments
         entityName = ResourceNames.ASSESSMENTS.toUpperCase();
-        result = this.resourceService.disallowHardEntityCountLimit(entityName);
-        Assert.assertEquals(result, Boolean.FALSE);
+        result = SearchResourceService.ExtendedSearchEntities.find(entityName);
+        Assert.assertEquals(result, Boolean.TRUE);
 
         //test competency level descriptions
         entityName = ResourceNames.COMPETENCY_LEVEL_DESCRIPTORS.toUpperCase();
-        result = this.resourceService.disallowHardEntityCountLimit(entityName);
-        Assert.assertEquals(result, Boolean.FALSE);
+        result = SearchResourceService.ExtendedSearchEntities.find(entityName);
+        Assert.assertEquals(result, Boolean.TRUE);
 
         //test learning objectives
         entityName = ResourceNames.LEARNINGOBJECTIVES.toUpperCase();
-        result = this.resourceService.disallowHardEntityCountLimit(entityName);
-        Assert.assertEquals(result, Boolean.FALSE);
+        result = SearchResourceService.ExtendedSearchEntities.find(entityName);
+        Assert.assertEquals(result, Boolean.TRUE);
 
         //test learning standards
         entityName = ResourceNames.LEARNINGSTANDARDS.toUpperCase();
-        result = this.resourceService.disallowHardEntityCountLimit(entityName);
-        Assert.assertEquals(result, Boolean.FALSE);
+        result = SearchResourceService.ExtendedSearchEntities.find(entityName);
+        Assert.assertEquals(result, Boolean.TRUE);
 
         //test student competency objectives
         entityName = ResourceNames.STUDENT_COMPETENCY_OBJECTIVES.toUpperCase();
-        result = this.resourceService.disallowHardEntityCountLimit(entityName);
-        Assert.assertEquals(result, Boolean.FALSE);
+        result = SearchResourceService.ExtendedSearchEntities.find(entityName);
+        Assert.assertEquals(result, Boolean.TRUE);
 
         //test null entity
         entityName = null;
-        result = this.resourceService.disallowHardEntityCountLimit(entityName);
-        Assert.assertEquals(result, Boolean.TRUE);
+        result = SearchResourceService.ExtendedSearchEntities.find(entityName);
+        Assert.assertEquals(result, Boolean.FALSE);
 
         //test empty entity
         entityName = "";
-        result = this.resourceService.disallowHardEntityCountLimit(entityName);
-        Assert.assertEquals(result, Boolean.TRUE);
+        result = SearchResourceService.ExtendedSearchEntities.find(entityName);
+        Assert.assertEquals(result, Boolean.FALSE);
 
         //test a few other entities that should not disallow use of the hard limit.
         entityName = ResourceNames.STUDENTS.toUpperCase();
-        result = this.resourceService.disallowHardEntityCountLimit(entityName);
-        Assert.assertEquals(result, Boolean.TRUE);
+        result = SearchResourceService.ExtendedSearchEntities.find(entityName);
+        Assert.assertEquals(result, Boolean.FALSE);
         entityName = ResourceNames.COURSES.toUpperCase();
-        result = this.resourceService.disallowHardEntityCountLimit(entityName);
-        Assert.assertEquals(result, Boolean.TRUE);
+        result = SearchResourceService.ExtendedSearchEntities.find(entityName);
+        Assert.assertEquals(result, Boolean.FALSE);
     }
 }
